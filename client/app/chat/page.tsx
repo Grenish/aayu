@@ -36,7 +36,7 @@ export default function Chat() {
   const handleBotResponse = async (userMessage: string) => {
     setIsLoading(true);
     try {
-      const response = await axios.post("http://localhost:5000/api/generate", {
+      const response = await axios.post("https://aayu-cljk.onrender.com", {
         input: userMessage,
       });
 
