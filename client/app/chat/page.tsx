@@ -36,7 +36,7 @@ const ChatComponent = () => {
   const handleBotResponse = async (userMessage: string) => {
     setIsLoading(true);
     try {
-      const response = await axios.post("https://aayu-cljk.onrender.com/", {
+      const response = await axios.post("https://aayu-cljk.onrender.com/api/generate", {
         input: userMessage,
       });
 
