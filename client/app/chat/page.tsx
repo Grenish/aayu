@@ -1,11 +1,11 @@
 "use client";
 
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, Suspense } from "react";
 import { useSearchParams } from "next/navigation";
 import axios from "axios";
 import TextBox from "../components/TextBox";
 
-export default function Chat() {
+const ChatComponent() {
   const searchParams = useSearchParams();
   const [messages, setMessages] = useState<{ role: string, text: string }[]>([]);
   const [isLoading, setIsLoading] = useState(false);
@@ -142,4 +142,13 @@ export default function Chat() {
       </div>
     </div>
   );
+}
+
+
+export default function Chat(){
+  return(
+    <Suspense fallback={<div>Loading chat...</div>}>
+      <ChatComponent />
+    </Suspense>
+  )
 }
