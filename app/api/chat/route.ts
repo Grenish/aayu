@@ -6,9 +6,14 @@ import SYSTEM_INSTRUCTION from "./instruction";
 export const runtime = "edge";
 
 const GEMINI_MODELS = {
-  FLASH: "gemini-2.5-flash",
-  FLASH_8B: "gemini-2.5-flash-8b",
-  PRO: "gemini-2.5-pro",
+  PRO_25: "gemini-2.5-pro",
+  FLASH_25: "gemini-2.5-flash",
+  FLASH_25_LITE: "gemini-2.5-flash-lite",
+  FLASH_20: "gemini-2.0-flash",
+  FLASH_20_LITE: "gemini-2.0-flash-lite",
+  GEMMA_NANO_2B: "gemma-3n-e2b-it",
+  GEMMA_NANO_4B: "gemma-3n-e4b-it",
+  GEMMA_12B: "gemma-3-12b-it",
 } as const;
 
 type GeminiModel = (typeof GEMINI_MODELS)[keyof typeof GEMINI_MODELS];
@@ -55,13 +60,21 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const {
-      messages,
-      prompt,
-      system,
-      model = GEMINI_MODELS.FLASH,
-      temperature = 0.7,
-    } = body;
+    const { messages, prompt, system, model = GEMINI_MODELS.FLASH_25, temperature = 0.7 } = body;
+
+    const finalSystem = system && system.trim().length > 0 ? system : SYSTEM_INSTRUCTION;
+    const appliedSystem = model === GEMINI_MODELS.PRO_25
+      ? `${finalSystem}\n\nIMPORTANT: You must structure your response as follows:
+<thinking>
+Your reasoning process here (be concise)
+</thinking>
+
+<final>
+Your actual response to the user here
+</final>
+
+Never mention these tags to the user. The thinking section is for reasoning only.`
+      : finalSystem;
 
     if (!messages?.length && !prompt) {
       return new Response(
@@ -94,21 +107,31 @@ export async function POST(req: NextRequest) {
 
     let result;
 
+    // Provide a 30s timeout
+    const timeoutSignal: AbortSignal =
+      (AbortSignal as any).timeout
+        ? (AbortSignal as any).timeout(30000)
+        : (() => {
+            const ctrl = new AbortController();
+            setTimeout(() => ctrl.abort(), 30000);
+            return ctrl.signal;
+          })();
+
     if (messages && messages.length > 0) {
       result = await streamText({
         model: geminiModel,
         messages,
-        system,
+        system: appliedSystem,
         temperature,
-        abortSignal: AbortSignal.timeout(30000),
+        abortSignal: timeoutSignal,
       });
     } else if (prompt) {
       result = await streamText({
         model: geminiModel,
         prompt,
-        system,
+        system: appliedSystem,
         temperature,
-        abortSignal: AbortSignal.timeout(30000),
+        abortSignal: timeoutSignal,
       });
     } else {
       throw new Error("No messages or prompt provided");
@@ -122,6 +145,26 @@ export async function POST(req: NextRequest) {
     });
   } catch (error: any) {
     console.error("[Chat API Error]:", error);
+
+    // Handle model overload / service unavailable explicitly
+    const isOverloaded =
+      error?.statusCode === 503 ||
+      error?.data?.error?.code === 503 ||
+      /overloaded|unavailable/i.test(error?.message || "");
+    if (isOverloaded) {
+      return new Response(
+        JSON.stringify({
+          error: "Model overloaded",
+          details:
+            "The selected model is temporarily unavailable (overloaded). Please retry in a moment or switch to a faster variant.",
+          transient: true,
+        }),
+        {
+          status: 503,
+          headers: { "Content-Type": "application/json" },
+        }
+      );
+    }
 
     if (error?.message?.includes("API key")) {
       return new Response(
@@ -182,6 +225,7 @@ export async function POST(req: NextRequest) {
           process.env.NODE_ENV === "development"
             ? error?.message
             : "An unexpected error occurred",
+        transient: false,
       }),
       {
         status: 500,
@@ -191,7 +235,6 @@ export async function POST(req: NextRequest) {
   }
 }
 
-// Optional: Handle OPTIONS for CORS if needed
 export async function OPTIONS(req: NextRequest) {
   return new Response(null, {
     status: 200,

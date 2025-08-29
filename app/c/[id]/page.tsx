@@ -10,20 +10,32 @@ import {
   RotateCcw,
   Square,
   ChevronDown,
+  ChevronRight,
+  Brain,
 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import { Streamdown } from "streamdown";
+import { ModeToggle } from "@/components/dark-toggle";
 
 interface Message {
   id: string;
   role: "user" | "assistant" | "system";
   content: string;
+  model?: (typeof AVAILABLE_MODELS)[number]["id"];
+  thinking?: string;
+  done?: boolean;
+  thinkingCollapsed?: boolean;
 }
 
 const AVAILABLE_MODELS = [
-  { id: "gemini-2.0-flash-exp", name: "Gemini 2.0 Flash", badge: "Fast" },
-  { id: "gemini-1.5-flash", name: "Gemini 1.5 Flash", badge: "Stable" },
-  { id: "gemini-1.5-pro", name: "Gemini 1.5 Pro", badge: "Advanced" },
+  { id: "gemini-2.5-pro", name: "Gemini 2.5 Pro", badge: "Quality" },
+  { id: "gemini-2.5-flash", name: "Gemini 2.5 Flash", badge: "Fast" },
+  { id: "gemini-2.5-flash-lite", name: "Gemini 2.5 Flash Lite", badge: "Lite" },
+  { id: "gemini-2.0-flash", name: "Gemini 2.0 Flash", badge: "Fast 2.0" },
+  { id: "gemini-2.0-flash-lite", name: "Gemini 2.0 Flash Lite", badge: "Lite 2.0" },
+  { id: "gemma-3n-e2b-it", name: "Gemma 3 Nano 2B", badge: "Edge 2B" },
+  { id: "gemma-3n-e4b-it", name: "Gemma 3 Nano 4B", badge: "Edge 4B" },
+  { id: "gemma-3-12b-it", name: "Gemma 3 12B", badge: "Mid 12B" },
 ] as const;
 
 export default function ChatPage() {
@@ -35,7 +47,7 @@ export default function ChatPage() {
   const dropdownRef = useRef<HTMLDivElement>(null);
   const [copiedIndex, setCopiedIndex] = useState<number | null>(null);
   const [isFocused, setIsFocused] = useState(false);
-  const [selectedModel, setSelectedModel] = useState(AVAILABLE_MODELS[0].id);
+  const [selectedModel, setSelectedModel] = useState<(typeof AVAILABLE_MODELS)[number]["id"]>(AVAILABLE_MODELS[0].id);
   const [isModelDropdownOpen, setIsModelDropdownOpen] = useState(false);
 
   const [messages, setMessages] = useState<Message[]>([]);
@@ -43,29 +55,30 @@ export default function ChatPage() {
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<Error | null>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
-  
-  // Refs for smooth streaming
-  const streamBufferRef = useRef<string>("");
-  const animationFrameRef = useRef<number | null>(null);
-  const lastUpdateTimeRef = useRef<number>(0);
-  const streamingMessageIdRef = useRef<string | null>(null);
 
   useEffect(() => {
     const storedData = sessionStorage.getItem(`chat-${chatId}`);
     if (storedData) {
-      const { initialMessage, model } = JSON.parse(storedData);
-      if (model) {
-        setSelectedModel(model);
+      try {
+        const parsed = JSON.parse(storedData) as { 
+          initialMessage?: string; 
+          model?: (typeof AVAILABLE_MODELS)[number]["id"]; 
+          consumed?: boolean 
+        };
+        if (parsed.model) {
+          setSelectedModel(parsed.model);
+        }
+        if (!parsed.consumed && messages.length === 0 && parsed.initialMessage) {
+          append({ role: "user", content: parsed.initialMessage });
+        }
+        sessionStorage.setItem(`chat-${chatId}`, JSON.stringify({ ...parsed, consumed: true }));
+      } catch {
+        // If parse fails just ignore
       }
-      if (messages.length === 0 && initialMessage) {
-        append({ role: "user", content: initialMessage });
-      }
-      sessionStorage.removeItem(`chat-${chatId}`);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []); // Run only once on mount
+  }, []);
 
-  // Close dropdown when clicking outside
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
       if (dropdownRef.current && !dropdownRef.current.contains(event.target as Node)) {
@@ -84,46 +97,17 @@ export default function ChatPage() {
   useEffect(() => {
     if (textareaRef.current) {
       textareaRef.current.style.height = "auto";
-      textareaRef.current.style.height =
-        Math.min(textareaRef.current.scrollHeight, 120) + "px";
+      textareaRef.current.style.height = Math.min(textareaRef.current.scrollHeight, 120) + "px";
     }
   }, [input]);
 
-  // Cleanup animation frame on unmount
-  useEffect(() => {
-    return () => {
-      if (animationFrameRef.current) {
-        cancelAnimationFrame(animationFrameRef.current);
-      }
-    };
-  }, []);
-
-  const updateStreamingMessage = useCallback(() => {
-    const now = performance.now();
-    const timeSinceLastUpdate = now - lastUpdateTimeRef.current;
-    
-    // Update at ~60fps (every 16ms) for smooth rendering
-    if (timeSinceLastUpdate >= 16 && streamBufferRef.current && streamingMessageIdRef.current) {
-      const bufferedContent = streamBufferRef.current;
-      const messageId = streamingMessageIdRef.current;
-      
-      setMessages((prev) =>
-        prev.map((m) =>
-          m.id === messageId
-            ? { ...m, content: m.content + bufferedContent }
-            : m
-        )
-      );
-      
-      streamBufferRef.current = "";
-      lastUpdateTimeRef.current = now;
-    }
-    
-    // Continue the animation loop while streaming
-    if (streamingMessageIdRef.current) {
-      animationFrameRef.current = requestAnimationFrame(updateStreamingMessage);
-    }
-  }, []);
+  const toggleThinking = (messageId: string) => {
+    setMessages(prev => prev.map(m => 
+      m.id === messageId 
+        ? { ...m, thinkingCollapsed: !m.thinkingCollapsed }
+        : m
+    ));
+  };
 
   const append = useCallback(
     async (message: Omit<Message, "id">) => {
@@ -137,6 +121,7 @@ export default function ChatPage() {
       try {
         abortControllerRef.current?.abort();
         abortControllerRef.current = new AbortController();
+        
         const response = await fetch("/api/chat", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -164,88 +149,111 @@ export default function ChatPage() {
 
         const reader = response.body.getReader();
         const decoder = new TextDecoder();
-        
-        // Create assistant message
+
         const assistantMessage: Message = {
           id: (Date.now() + 1).toString(),
           role: "assistant",
           content: "",
+          model: selectedModel,
+          thinkingCollapsed: true,
         };
         setMessages((prev) => [...prev, assistantMessage]);
-        
-        // Initialize streaming
-        streamingMessageIdRef.current = assistantMessage.id;
-        streamBufferRef.current = "";
-        lastUpdateTimeRef.current = performance.now();
-        animationFrameRef.current = requestAnimationFrame(updateStreamingMessage);
 
-        // Read stream with buffering
-        let accumulatedContent = "";
+        let fullText = "";
+        let thinking = "";
+        let finalContent = "";
+        let isInThinking = false;
+        let isInFinal = false;
+
         while (true) {
           const { done, value } = await reader.read();
           if (done) break;
-          
+
           const chunk = decoder.decode(value, { stream: true });
-          if (chunk) {
-            accumulatedContent += chunk;
-            streamBufferRef.current += chunk;
+          fullText += chunk;
+
+          if (selectedModel === "gemini-2.5-pro") {
+            // Parse thinking and final tags
+            const thinkingMatch = fullText.match(/<thinking>([\s\S]*?)(?:<\/thinking>|$)/);
+            const finalMatch = fullText.match(/<final>([\s\S]*?)(?:<\/final>|$)/);
+
+            if (thinkingMatch) {
+              thinking = thinkingMatch[1].trim();
+              isInThinking = !fullText.includes('</thinking>');
+            }
+
+            if (finalMatch) {
+              finalContent = finalMatch[1].trim();
+              isInFinal = !fullText.includes('</final>');
+            }
+
+            // Update message with parsed content
+            setMessages((prev) =>
+              prev.map((m) =>
+                m.id === assistantMessage.id
+                  ? {
+                      ...m,
+                      content: finalContent,
+                      thinking: thinking || undefined,
+                      done: fullText.includes('</final>'),
+                    }
+                  : m
+              )
+            );
+          } else {
+            // For non-pro models, just accumulate content
+            setMessages((prev) =>
+              prev.map((m) =>
+                m.id === assistantMessage.id
+                  ? { ...m, content: fullText }
+                  : m
+              )
+            );
           }
         }
-        
-        // Final update to ensure all content is displayed
-        if (streamBufferRef.current) {
-          setMessages((prev) =>
-            prev.map((m) =>
-              m.id === assistantMessage.id
-                ? { ...m, content: accumulatedContent }
-                : m
-            )
-          );
-        }
-        
-        // Clean up streaming
-        streamingMessageIdRef.current = null;
-        streamBufferRef.current = "";
-        if (animationFrameRef.current) {
-          cancelAnimationFrame(animationFrameRef.current);
-          animationFrameRef.current = null;
-        }
-        
+
+        // Mark as done
+        setMessages((prev) =>
+          prev.map((m) =>
+            m.id === assistantMessage.id
+              ? { ...m, done: true }
+              : m
+          )
+        );
       } catch (err: any) {
         if (err?.name !== "AbortError") {
           setError(err instanceof Error ? err : new Error(String(err)));
-        }
-        // Clean up on error
-        streamingMessageIdRef.current = null;
-        streamBufferRef.current = "";
-        if (animationFrameRef.current) {
-          cancelAnimationFrame(animationFrameRef.current);
-          animationFrameRef.current = null;
         }
       } finally {
         setIsLoading(false);
         abortControllerRef.current = null;
       }
     },
-    [messages, selectedModel, updateStreamingMessage]
+    [messages, selectedModel]
   );
 
   const stop = () => {
     abortControllerRef.current?.abort();
-    // Clean up streaming
-    streamingMessageIdRef.current = null;
-    streamBufferRef.current = "";
-    if (animationFrameRef.current) {
-      cancelAnimationFrame(animationFrameRef.current);
-      animationFrameRef.current = null;
-    }
   };
 
   const reload = () => {
-    const lastUser = [...messages].reverse().find((m) => m.role === "user");
-    if (!lastUser) return;
-    setMessages((prev) => prev.filter((m) => m.id !== lastUser.id));
-    append({ role: "user", content: lastUser.content });
+    const lastUserIndex = messages.findLastIndex((m) => m.role === "user");
+    if (lastUserIndex === -1) return;
+    
+    const lastUser = messages[lastUserIndex];
+    // Remove last user message and all messages after it
+    setMessages((prev) => prev.slice(0, lastUserIndex));
+    // Re-send the message
+    setTimeout(() => {
+      append({ role: "user", content: lastUser.content });
+    }, 100);
+  };
+
+  const retryWithFlash = () => {
+    if (selectedModel === "gemini-2.5-pro") {
+      setSelectedModel("gemini-2.5-flash");
+      reload();
+    }
   };
 
   const handleSubmit = (e: React.FormEvent) => {
@@ -270,7 +278,7 @@ export default function ChatPage() {
 
   return (
     <div className="flex flex-col h-screen bg-white dark:bg-gray-950">
-      {/* Minimal Header */}
+      {/* Header */}
       <header className="border-b border-gray-200 dark:border-gray-800 px-4 py-3">
         <div className="max-w-3xl mx-auto flex items-center gap-3">
           <button
@@ -280,10 +288,11 @@ export default function ChatPage() {
             <ArrowLeft className="w-4 h-4 text-gray-600 dark:text-gray-400" />
           </button>
           
-          <div className="flex-1">
+          <div className="flex-1 flex items-center justify-between">
             <p className="text-xs font-medium text-gray-600 dark:text-gray-400">
               Chat {chatId.substring(0, 8)}
             </p>
+            <ModeToggle />
           </div>
 
           {/* Model Selector */}
@@ -344,16 +353,25 @@ export default function ChatPage() {
           {error && (
             <div className="mb-6 text-sm text-gray-600 dark:text-gray-400 bg-gray-50 dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-lg px-4 py-3">
               <p className="font-medium mb-1">Something went wrong</p>
-              <p className="text-xs text-gray-500 dark:text-gray-500">
-                {error.message}
-              </p>
-              <button
-                onClick={reload}
-                className="mt-2 inline-flex items-center gap-1.5 text-xs font-medium text-gray-600 hover:text-gray-900 dark:text-gray-400 dark:hover:text-gray-100 transition-colors"
-              >
-                <RotateCcw className="w-3 h-3" />
-                Retry
-              </button>
+              <p className="text-xs text-gray-500 dark:text-gray-500">{error.message}</p>
+              <div className="flex gap-2 mt-2">
+                <button
+                  onClick={reload}
+                  className="inline-flex items-center gap-1.5 text-xs font-medium text-gray-600 hover:text-gray-900 dark:text-gray-400 dark:hover:text-gray-100 transition-colors"
+                >
+                  <RotateCcw className="w-3 h-3" />
+                  Retry
+                </button>
+                {/overloaded|unavailable/i.test(error.message) && selectedModel === 'gemini-2.5-pro' && (
+                  <button
+                    onClick={retryWithFlash}
+                    className="inline-flex items-center gap-1.5 text-xs font-medium text-blue-600 hover:text-blue-800 dark:text-blue-400 dark:hover:text-blue-300 transition-colors"
+                  >
+                    <RotateCcw className="w-3 h-3" />
+                    Use Flash Model
+                  </button>
+                )}
+              </div>
             </div>
           )}
 
@@ -367,11 +385,7 @@ export default function ChatPage() {
                 transition={{ duration: 0.2, ease: "easeOut" }}
                 className="mb-8 group"
               >
-                <div
-                  className={`flex gap-3 ${
-                    message.role === "user" ? "flex-row-reverse" : ""
-                  }`}
-                >
+                <div className={`flex gap-3 ${message.role === "user" ? "flex-row-reverse" : ""}`}>
                   {/* Avatar */}
                   <div className="flex-shrink-0">
                     <div
@@ -388,11 +402,42 @@ export default function ChatPage() {
                   </div>
 
                   {/* Message Content */}
-                  <div
-                    className={`flex-1 space-y-1 ${
-                      message.role === "user" ? "text-right" : ""
-                    }`}
-                  >
+                  <div className={`flex-1 space-y-2 ${message.role === "user" ? "text-right" : ""}`}>
+                    {/* Thinking section (collapsible) for Pro model */}
+                    {message.role === "assistant" && message.thinking && (
+                      <div className="mb-2">
+                        <button
+                          onClick={() => toggleThinking(message.id)}
+                          className="inline-flex items-center gap-1.5 px-2 py-1 text-xs font-medium text-amber-700 dark:text-amber-400 bg-amber-50 dark:bg-amber-950/30 hover:bg-amber-100 dark:hover:bg-amber-950/50 rounded-lg transition-colors border border-amber-200 dark:border-amber-800"
+                        >
+                          <Brain className="w-3 h-3" />
+                          <span>Thinking Process</span>
+                          {message.thinkingCollapsed ? (
+                            <ChevronRight className="w-3 h-3" />
+                          ) : (
+                            <ChevronDown className="w-3 h-3" />
+                          )}
+                        </button>
+                        
+                        <AnimatePresence>
+                          {!message.thinkingCollapsed && (
+                            <motion.div
+                              initial={{ height: 0, opacity: 0 }}
+                              animate={{ height: "auto", opacity: 1 }}
+                              exit={{ height: 0, opacity: 0 }}
+                              transition={{ duration: 0.2 }}
+                              className="overflow-hidden"
+                            >
+                              <div className="mt-2 p-3 rounded-lg border border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-950/30 text-xs text-amber-800 dark:text-amber-300 font-mono whitespace-pre-wrap">
+                                {message.thinking}
+                              </div>
+                            </motion.div>
+                          )}
+                        </AnimatePresence>
+                      </div>
+                    )}
+
+                    {/* Main content */}
                     <div
                       className={`inline-block text-sm ${
                         message.role === "user"
@@ -400,19 +445,27 @@ export default function ChatPage() {
                           : "text-gray-700 dark:text-gray-300"
                       }`}
                     >
-                      <div className="prose prose-sm dark:prose-invert max-w-none prose-pre:bg-gray-100 dark:prose-pre:bg-gray-900 prose-pre:border prose-pre:border-gray-200 dark:prose-pre:border-gray-800">
-                        <Streamdown>{message.content}</Streamdown>
-                      </div>
+                      {message.content ? (
+                        <div className="prose prose-sm dark:prose-invert max-w-none prose-pre:bg-gray-100 dark:prose-pre:bg-gray-900 prose-pre:border prose-pre:border-gray-200 dark:prose-pre:border-gray-800">
+                          <Streamdown>{message.content}</Streamdown>
+                        </div>
+                      ) : (
+                        message.role === "assistant" && !message.done && (
+                          <div className="flex items-center gap-1">
+                            <span className="w-2 h-2 bg-gray-400 dark:bg-gray-600 rounded-full animate-bounce [animation-delay:-0.3s]"></span>
+                            <span className="w-2 h-2 bg-gray-400 dark:bg-gray-600 rounded-full animate-bounce [animation-delay:-0.15s]"></span>
+                            <span className="w-2 h-2 bg-gray-400 dark:bg-gray-600 rounded-full animate-bounce"></span>
+                          </div>
+                        )
+                      )}
                     </div>
 
-                    {/* Copy button for assistant messages */}
-                    {message.role === "assistant" && message.content && (
-                      <div className="flex items-center gap-2 mt-2">
+                    {/* Actions for assistant messages */}
+                    {message.role === "assistant" && message.content && message.done && (
+                      <div className="flex items-center gap-3 mt-2 opacity-0 group-hover:opacity-100 transition-opacity">
                         <button
-                          onClick={() =>
-                            copyToClipboard(message.content, index)
-                          }
-                          className="inline-flex items-center gap-1.5 px-2 py-1 text-xs text-gray-500 hover:text-gray-700 dark:text-gray-500 dark:hover:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-900 rounded transition-all opacity-0 group-hover:opacity-100"
+                          onClick={() => copyToClipboard(message.content, index)}
+                          className="inline-flex items-center gap-1.5 px-2 py-1 text-xs text-gray-500 hover:text-gray-700 dark:text-gray-500 dark:hover:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-900 rounded"
                         >
                           {copiedIndex === index ? (
                             <>
@@ -426,6 +479,11 @@ export default function ChatPage() {
                             </>
                           )}
                         </button>
+                        {message.model && (
+                          <span className="inline-flex items-center gap-1 px-2 py-1 text-[10px] font-medium rounded bg-gray-100 dark:bg-gray-900 text-gray-600 dark:text-gray-400 border border-gray-200 dark:border-gray-800">
+                            {AVAILABLE_MODELS.find(m => m.id === message.model)?.name || message.model}
+                          </span>
+                        )}
                       </div>
                     )}
                   </div>
@@ -434,28 +492,11 @@ export default function ChatPage() {
             ))}
           </AnimatePresence>
 
-          {isLoading && !messages.find(m => m.id === streamingMessageIdRef.current) && (
-            <motion.div
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              className="flex gap-3"
-            >
-              <div className="w-7 h-7 rounded-lg bg-gray-100 dark:bg-gray-900 flex items-center justify-center text-xs font-medium text-gray-700 dark:text-gray-300">
-                AI
-              </div>
-              <div className="flex items-center gap-1">
-                <span className="w-2 h-2 bg-gray-400 dark:bg-gray-600 rounded-full animate-bounce [animation-delay:-0.3s]"></span>
-                <span className="w-2 h-2 bg-gray-400 dark:bg-gray-600 rounded-full animate-bounce [animation-delay:-0.15s]"></span>
-                <span className="w-2 h-2 bg-gray-400 dark:bg-gray-600 rounded-full animate-bounce"></span>
-              </div>
-            </motion.div>
-          )}
-
           <div ref={messagesEndRef} />
         </div>
       </div>
 
-      {/* Input Form - Matching home page style */}
+      {/* Input Form */}
       <div className="border-t border-gray-200 dark:border-gray-800 p-4">
         <form onSubmit={handleSubmit} className="max-w-3xl mx-auto">
           <div

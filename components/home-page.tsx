@@ -4,18 +4,24 @@ import { useState, useRef, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { ArrowRight, Command, ChevronDown } from "lucide-react";
 import { nanoid } from "nanoid";
+import { ModeToggle } from "./dark-toggle";
 
 const AVAILABLE_MODELS = [
-  { id: "gemini-2.0-flash-exp", name: "Gemini 2.0 Flash", badge: "Fast" },
-  { id: "gemini-1.5-flash", name: "Gemini 1.5 Flash", badge: "Stable" },
-  { id: "gemini-1.5-pro", name: "Gemini 1.5 Pro", badge: "Advanced" },
+  { id: "gemini-2.5-pro", name: "Gemini 2.5 Pro", badge: "Quality" },
+  { id: "gemini-2.5-flash", name: "Gemini 2.5 Flash", badge: "Fast" },
+  { id: "gemini-2.5-flash-lite", name: "Gemini 2.5 Flash Lite", badge: "Lite" },
+  { id: "gemini-2.0-flash", name: "Gemini 2.0 Flash", badge: "Fast 2.0" },
+  { id: "gemini-2.0-flash-lite", name: "Gemini 2.0 Flash Lite", badge: "Lite 2.0" },
+  { id: "gemma-3n-e2b-it", name: "Gemma 3 Nano 2B", badge: "Edge 2B" },
+  { id: "gemma-3n-e4b-it", name: "Gemma 3 Nano 4B", badge: "Edge 4B" },
+  { id: "gemma-3-12b-it", name: "Gemma 3 12B", badge: "Mid 12B" },
 ] as const;
 
 export default function HomePage() {
   const [input, setInput] = useState("");
   const [isLoading, setIsLoading] = useState(false);
   const [isFocused, setIsFocused] = useState(false);
-  const [selectedModel, setSelectedModel] = useState(AVAILABLE_MODELS[0].id);
+  const [selectedModel, setSelectedModel] = useState<(typeof AVAILABLE_MODELS)[number]["id"]>(AVAILABLE_MODELS[0].id);
   const [isModelDropdownOpen, setIsModelDropdownOpen] = useState(false);
   const router = useRouter();
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -59,6 +65,7 @@ export default function HomePage() {
         initialMessage: input.trim(),
         model: selectedModel,
         createdAt: new Date().toISOString(),
+        consumed: false,
       })
     );
 
@@ -95,6 +102,7 @@ export default function HomePage() {
                 Start typing to begin
               </p>
             </div>
+            <ModeToggle />
           </div>
 
           {/* Model Selector */}
